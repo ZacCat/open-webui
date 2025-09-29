@@ -639,6 +639,7 @@ async def disconnect(sid):
 
 
 def get_event_emitter(request_info, update_db=True):
+    # here
     async def __event_emitter__(event_data):
         user_id = request_info["user_id"]
 
@@ -677,21 +678,38 @@ def get_event_emitter(request_info, update_db=True):
                 )
 
             if "type" in event_data and event_data["type"] == "message":
-                message = Chats.get_message_by_id_and_message_id(
-                    request_info["chat_id"],
-                    request_info["message_id"],
+                message_lock = RedisLock(
+                    redis_url=WEBSOCKET_REDIS_URL,
+                    lock_name=f"{REDIS_KEY_PREFIX}:message_lock:{request_info['chat_id']}:{request_info['message_id']}",
+                    timeout_secs=WEBSOCKET_REDIS_LOCK_TIMEOUT,
+                    redis_sentinels=redis_sentinels,
+                    redis_cluster=WEBSOCKET_REDIS_CLUSTER,
                 )
 
-                if message:
-                    content = message.get("content", "")
-                    content += event_data.get("data", {}).get("content", "")
+                acquired = message_lock.aquire_lock()
+                if acquired:
+                    try:
+                        message = Chats.get_message_by_id_and_message_id(
+                            request_info["chat_id"],
+                            request_info["message_id"],
+                        )
 
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        request_info["chat_id"],
-                        request_info["message_id"],
-                        {
-                            "content": content,
-                        },
+                        if message:
+                            content = message.get("content", "")
+                            content += event_data.get("data", {}).get("content", "")
+
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                request_info["chat_id"],
+                                request_info["message_id"],
+                                {
+                                    "content": content,
+                                },
+                            )
+                    finally:
+                        message_lock.release_lock()
+                else:
+                    log.warning(
+                        f"Could not acquire lock for message {request_info['message_id']}"
                     )
 
             if "type" in event_data and event_data["type"] == "replace":
